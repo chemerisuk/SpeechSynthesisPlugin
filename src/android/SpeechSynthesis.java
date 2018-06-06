@@ -13,10 +13,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import android.content.Context;
+import android.media.AudioManager;
 import android.os.Build;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeech.OnInitListener;
-import android.speech.tts.TextToSpeech.OnUtteranceCompletedListener;
+import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.util.Log;
 
@@ -24,20 +26,30 @@ import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.PluginResult;
 
-public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, OnUtteranceCompletedListener {
+public class SpeechSynthesis extends CordovaPlugin implements OnInitListener {
 
     private static final String LOG_TAG = "TTS";
     private static final int STOPPED = 0;
     private static final int INITIALIZING = 1;
     private static final int STARTED = 2;
+
+    private AudioManager audioManager;
+    private int maxVolume;
+    private int currentVolume;
+
     private TextToSpeech mTts = null;
     private int state = STOPPED;
+
     private CallbackContext startupCallbackContext;
     private CallbackContext callbackContext;
 
     private Map<String, Voice> voiceMap = null;
 
-    //private String startupCallbackId = "";
+    @Override
+    protected void pluginInitialize() {
+        this.audioManager = (AudioManager)cordova.getActivity().getSystemService(Context.AUDIO_SERVICE);
+        this.maxVolume = this.audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+    }
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -70,15 +82,17 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
                 float pitch = (float)utterance.optDouble("pitch", 1.0);
                 mTts.setPitch(pitch);
 
-                float volume = (float)utterance.optDouble("volume", 0.5);
-                // how to set volume
+                float volume = (float)utterance.optDouble("volume", 0);
+                this.currentVolume = this.audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+                if (volume > 0) {
+                    this.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, (int)(this.maxVolume * volume), 0);
+                }
 
                 float rate = (float)utterance.optDouble("rate", 1.0);
                 mTts.setSpeechRate(rate);
 
                 if (isReady()) {
-                    HashMap<String, String> map = null;
-                    map = new HashMap<String, String>();
+                    HashMap<String, String> map = new HashMap<String, String>();
                     map.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, callbackContext.getCallbackId());
                     JSONObject event = new JSONObject();
                     event.put("type","start");
@@ -94,8 +108,7 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
                 }
             } else if (action.equals("cancel")) {
                 if (isReady()) {
-                    HashMap<String, String> map = null;
-                    map = new HashMap<String, String>();
+                    HashMap<String, String> map = new HashMap<String, String>();
                     //map.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, callbackId);
                     mTts.speak("", TextToSpeech.QUEUE_FLUSH, map);
                     fireEndEvent(callbackContext);
@@ -131,7 +144,7 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
                     state = SpeechSynthesis.INITIALIZING;
                     mTts = new TextToSpeech(cordova.getActivity().getApplicationContext(), this);
                 }else{
-            		getVoices(callbackContext);
+                    getVoices(callbackContext);
                 }
                 PluginResult pluginResult = new PluginResult(status, SpeechSynthesis.INITIALIZING);
                 pluginResult.setKeepCallback(true);
@@ -208,10 +221,8 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
                 }
             }
         }
-        PluginResult result = new PluginResult(PluginResult.Status.OK, voices);
-        result.setKeepCallback(false);
-        startupCallbackContext.sendPluginResult(result);
-        mTts.setOnUtteranceCompletedListener(this);
+
+        startupCallbackContext.success(voices);
     }
 
     private void fireEndEvent(CallbackContext callbackContext) {
@@ -221,19 +232,20 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
         } catch (JSONException e) {
             // this will never happen
         }
-        PluginResult pr = new PluginResult(PluginResult.Status.OK, event);
-        pr.setKeepCallback(false);
-        callbackContext.sendPluginResult(pr);
+        callbackContext.success(event);
     }
 
-    private void fireErrorEvent(CallbackContext callbackContext)
-            throws JSONException {
+    private void fireErrorEvent(CallbackContext callbackContext) {
         JSONObject error = new JSONObject();
-        error.put("type","error");
-        error.put("charIndex",0);
-        error.put("elapsedTime",0);
-        error.put("name","");
-        callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR, error));
+        try {
+            error.put("type","error");
+            error.put("charIndex",0);
+            error.put("elapsedTime",0);
+            error.put("name","");
+        } catch (JSONException e) {
+            // this will never happen
+        }
+        callbackContext.error(error);
     }
 
     /**
@@ -255,39 +267,29 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
             state = SpeechSynthesis.STARTED;
             getVoices(this.startupCallbackContext);
 
+            mTts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override
+                public void onDone(String utteranceId) {
+                    Log.d(LOG_TAG, "got completed utterance");
+                    fireEndEvent(callbackContext);
 
-//                Putting this code in hear as a place holder. When everything moves to API level 15 or greater
-//                we'll switch over to this way of tracking progress.
-//                mTts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-//
-//                    @Override
-//                    public void onDone(String utteranceId) {
-//                        Log.d(LOG_TAG, "got completed utterance");
-//                        PluginResult result = new PluginResult(PluginResult.Status.OK);
-//                        result.setKeepCallback(false);
-//                        callbackContext.sendPluginResult(result);
-//                    }
-//
-//                    @Override
-//                    public void onError(String utteranceId) {
-//                        Log.d(LOG_TAG, "got utterance error");
-//                        PluginResult result = new PluginResult(PluginResult.Status.ERROR);
-//                        result.setKeepCallback(false);
-//                        callbackContext.sendPluginResult(result);
-//                    }
-//
-//                    @Override
-//                    public void onStart(String utteranceId) {
-//                        Log.d(LOG_TAG, "started talking");
-//                    }
-//
-//                });
-        }
-        else if (status == TextToSpeech.ERROR) {
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, currentVolume, 0);
+                }
+
+                @Override
+                public void onError(String utteranceId) {
+                    Log.d(LOG_TAG, "got utterance error");
+                    fireErrorEvent(callbackContext);
+                }
+
+                @Override
+                public void onStart(String utteranceId) {
+                    Log.d(LOG_TAG, "started talking");
+                }
+            });
+        } else if (status == TextToSpeech.ERROR) {
             state = SpeechSynthesis.STOPPED;
-            PluginResult result = new PluginResult(PluginResult.Status.ERROR, SpeechSynthesis.STOPPED);
-            result.setKeepCallback(false);
-            this.startupCallbackContext.sendPluginResult(result);
+            this.startupCallbackContext.error(SpeechSynthesis.STOPPED);
         }
     }
 
@@ -298,12 +300,5 @@ public class SpeechSynthesis extends CordovaPlugin implements OnInitListener, On
         if (mTts != null) {
             mTts.shutdown();
         }
-    }
-
-    /**
-     * Once the utterance has completely been played call the speak's success callback
-     */
-    public void onUtteranceCompleted(String utteranceId) {
-        fireEndEvent(callbackContext);
     }
 }
